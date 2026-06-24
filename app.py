@@ -25,7 +25,6 @@ def load_data():
         players_df.to_csv(PLAYER_FILE, index=False, encoding='utf-8-sig')
     
     players = players_df['선수명'].tolist()
-
     if os.path.exists(MATCH_FILE): matches_df = pd.read_csv(MATCH_FILE)
     else:
         matches_df = pd.DataFrame(columns=["매치ID", "날짜", "대회명", "종목", "경기유형", "타겟점수", "선수A", "선수B", "득점A", "득점B", "승자"])
@@ -33,13 +32,13 @@ def load_data():
         
     if os.path.exists(ACTION_FILE): actions_df = pd.read_csv(ACTION_FILE)
     else:
-        actions_df = pd.DataFrame(columns=["매치ID", "경기유형", "득점자", "기술분류", "타겟부위"])
+        # 💡 팀 컬럼 추가 보완
+        actions_df = pd.DataFrame(columns=["매치ID", "경기유형", "팀", "득점자", "기술분류", "타겟부위"])
         actions_df.to_csv(ACTION_FILE, index=False, encoding='utf-8-sig')
         
     return players_df, players, matches_df, actions_df
 
 players_df, players, matches_df, actions_df = load_data()
-
 if 'current_actions' not in st.session_state: st.session_state.current_actions = []
 
 # ==========================================
@@ -56,18 +55,24 @@ menu = st.sidebar.radio(
 # ==========================================
 
 # ---------------------------------------------------------
-# [메뉴 1] 선수 및 소속팀 관리
+# [메뉴 1] 선수 및 소속팀 관리 (💡 등록/수정/삭제 탭 기능 추가!)
 # ---------------------------------------------------------
 if menu == "👤 선수 및 소속팀 관리":
     st.title("👤 선수 및 소속팀 명단 관리")
-    col1, col2 = st.columns(2)
     
-    with col1:
+    # 💡 깔끔한 관리를 위해 3개의 탭(Tab)으로 분리
+    tab1, tab2, tab3 = st.tabs(["➕ 선수 등록", "✏️ 선수 정보 수정", "🗑️ 선수 삭제"])
+    
+    # --- [탭 1] 선수 등록 ---
+    with tab1:
         st.subheader("새 선수 등록")
-        new_player = st.text_input("추가할 선수 이름")
-        new_team = st.text_input("소속팀 (선택사항)", placeholder="예: 대전광역시청")
+        col_add1, col_add2 = st.columns(2)
+        with col_add1:
+            new_player = st.text_input("추가할 선수 이름")
+        with col_add2:
+            new_team = st.text_input("소속팀 (선택사항)", placeholder="예: 대전광역시청")
         
-        if st.button("선수 추가"):
+        if st.button("선수 추가", type="primary"):
             if new_player == "": st.warning("이름을 입력해주세요.")
             elif new_player in players: st.warning("이미 등록된 선수입니다.")
             else:
@@ -76,10 +81,57 @@ if menu == "👤 선수 및 소속팀 관리":
                 pd.concat([players_df, new_row], ignore_index=True).to_csv(PLAYER_FILE, index=False, encoding='utf-8-sig')
                 st.success(f"'{new_player}' ({team_name}) 추가 완료!"); st.rerun()
 
-    with col2:
-        st.subheader("선수 삭제")
+    # --- [탭 2] 선수 정보 수정 (💡 신규 추가) ---
+    with tab2:
+        st.subheader("선수 정보 및 소속팀 수정")
         if players:
-            player_to_delete = st.selectbox("삭제할 선수 선택", players)
+            col_edit1, col_edit2 = st.columns(2)
+            with col_edit1:
+                player_to_edit = st.selectbox("수정할 선수 선택", players, key="edit_select")
+                current_team = players_df[players_df['선수명'] == player_to_edit]['소속팀'].values[0]
+            
+            with st.form("edit_form"):
+                st.info("💡 이름을 수정하면 과거에 저장된 모든 경기 기록 및 세부 기술 데이터의 이름도 함께 100% 자동 업데이트됩니다.")
+                e_col1, e_col2 = st.columns(2)
+                new_player_name = e_col1.text_input("선수 이름 수정", value=player_to_edit)
+                new_team_name = e_col2.text_input("소속팀 수정", value=current_team)
+                
+                if st.form_submit_button("정보 수정 적용"):
+                    if new_player_name == "":
+                        st.error("이름을 비울 수 없습니다.")
+                    elif new_player_name != player_to_edit and new_player_name in players:
+                        st.error("이미 존재하는 다른 선수의 이름으로 변경할 수 없습니다.")
+                    else:
+                        # 1. players_df 업데이트
+                        players_df.loc[players_df['선수명'] == player_to_edit, '선수명'] = new_player_name
+                        players_df.loc[players_df['선수명'] == new_player_name, '소속팀'] = new_team_name
+                        players_df.to_csv(PLAYER_FILE, index=False, encoding='utf-8-sig')
+                        
+                        # 2. 이름이 변경된 경우 과거 DB 전체 연쇄 업데이트 (Cascade Update)
+                        if new_player_name != player_to_edit:
+                            if not matches_df.empty:
+                                matches_df['선수A'] = matches_df['선수A'].replace(player_to_edit, new_player_name)
+                                matches_df['선수B'] = matches_df['선수B'].replace(player_to_edit, new_player_name)
+                                matches_df['승자'] = matches_df['승자'].replace(player_to_edit, new_player_name)
+                                matches_df['매치ID'] = matches_df['매치ID'].str.replace(player_to_edit, new_player_name)
+                                matches_df.to_csv(MATCH_FILE, index=False, encoding='utf-8-sig')
+                            
+                            if not actions_df.empty:
+                                actions_df['득점자'] = actions_df['득점자'].replace(player_to_edit, new_player_name)
+                                if '팀' in actions_df.columns:
+                                    actions_df['팀'] = actions_df['팀'].replace(player_to_edit, new_player_name)
+                                actions_df['매치ID'] = actions_df['매치ID'].str.replace(player_to_edit, new_player_name)
+                                actions_df.to_csv(ACTION_FILE, index=False, encoding='utf-8-sig')
+                            
+                        st.success(f"'{player_to_edit}' 선수의 정보가 성공적으로 수정되었습니다!"); st.rerun()
+        else:
+            st.info("등록된 선수가 없습니다.")
+
+    # --- [탭 3] 선수 삭제 ---
+    with tab3:
+        st.subheader("선수 강제 삭제")
+        if players:
+            player_to_delete = st.selectbox("삭제할 선수 선택", players, key="del_select")
             has_matches = not matches_df[(matches_df['선수A'] == player_to_delete) | (matches_df['선수B'] == player_to_delete)].empty
             
             if has_matches:
@@ -90,7 +142,8 @@ if menu == "👤 선수 및 소속팀 관리":
                         updated_players_df = players_df[players_df['선수명'] != player_to_delete]
                         updated_players_df.to_csv(PLAYER_FILE, index=False, encoding='utf-8-sig')
                         matches_df[(matches_df['선수A'] != player_to_delete) & (matches_df['선수B'] != player_to_delete)].to_csv(MATCH_FILE, index=False, encoding='utf-8-sig')
-                        actions_df[~actions_df['매치ID'].str.contains(player_to_delete)].to_csv(ACTION_FILE, index=False, encoding='utf-8-sig')
+                        if not actions_df.empty:
+                            actions_df[~actions_df['매치ID'].str.contains(player_to_delete)].to_csv(ACTION_FILE, index=False, encoding='utf-8-sig')
                         st.success(f"삭제 완료!"); st.rerun()
                     else: st.error("삭제하려면 위 체크박스에 먼저 체크해야 합니다.")
             else:
@@ -104,7 +157,7 @@ if menu == "👤 선수 및 소속팀 관리":
     st.dataframe(display_df, use_container_width=True)
 
 # ---------------------------------------------------------
-# [메뉴 2] 경기 결과 입력 (💡 3가지 모드로 완벽 분리 복구!)
+# [메뉴 2] 경기 결과 입력
 # ---------------------------------------------------------
 elif menu == "📝 경기 결과 입력 (결과/세부)":
     st.title("📝 경기 기록")
@@ -142,16 +195,12 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
     
     st.markdown("---")
     
-    # 💡 [핵심] 기록 방식을 3가지로 나눔 (단체전 전용 메뉴 추가)
     if "단체전" in match_type_selection:
         input_mode = st.radio("기록 방식 선택", ["단순 결과만 저장", "단체전 9바우트 스코어 기록", "세부 기술(액션) 포인트 기록"], horizontal=True)
     else:
         input_mode = st.radio("기록 방식 선택", ["단순 결과만 저장", "세부 기술(액션) 포인트 기록"], horizontal=True)
 
-
-    # ==========================================
-    # 1. 단순 기록 모드 (개인전/단체전 공통)
-    # ==========================================
+    # 1. 단순 기록 모드
     if input_mode == "단순 결과만 저장":
         with st.form("quick"):
             c1, c2 = st.columns(2)
@@ -166,13 +215,9 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
                     pd.concat([matches_df, new_match], ignore_index=True).to_csv(MATCH_FILE, index=False, encoding='utf-8-sig')
                     st.success(f"{match_type_str} 결과가 성공적으로 저장되었습니다!")
 
-    # ==========================================
-    # 2. 단체전 9바우트 스코어 기록 모드 (단체전 전용)
-    # ==========================================
+    # 2. 단체전 9바우트 모드
     elif input_mode == "단체전 9바우트 스코어 기록":
         st.markdown("### 🤝 단체전 9릴레이 스코어 기록")
-        st.info("각 바우트별 출전 선수와 **해당 라운드에서 순수하게 얻은 점수**를 기입하세요.")
-        
         with st.form("team_relay_form"):
             bouts = []
             for i in range(1, 10):
@@ -205,14 +250,11 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
                     else:
                         st.warning("입력된 점수가 없어 저장되지 않았습니다.")
 
-    # ==========================================
-    # 3. 세부 기술(액션) 기록 모드 (💡 개인전/단체전 통합)
-    # ==========================================
+    # 3. 세부 기술 모드
     elif input_mode == "세부 기술(액션) 포인트 기록":
         st.markdown("### 🤺 포인트 세부 액션 기록")
         if entity_a == entity_b: st.error("대상을 다르게 선택하세요."); st.stop()
         
-        # 💡 [핵심 복구] 단체전일 경우 팀 선택 + 실제 득점자 선택 이중 분리
         if "단체전" in match_type_selection:
             st.info("단체전은 득점한 **팀**과 실제 기술을 쓴 **선수**를 함께 선택하세요.")
             scoring_team = st.radio("어느 팀이 득점했나요?", [entity_a, entity_b], horizontal=True)
@@ -229,7 +271,6 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
         col_btn1, col_btn2 = st.columns([1, 3])
         with col_btn1:
             if st.button("➕ 액션 기록 추가"):
-                # 단체전이면 '팀'도 함께 임시 저장소에 넣음
                 st.session_state.current_actions.append({
                     "팀": scoring_team if scoring_team else scorer, 
                     "득점자": scorer, "기술분류": action_type, "타겟부위": target
@@ -244,7 +285,6 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
             cur_b = len(temp_df[temp_df['팀'] == entity_b])
             st.markdown(f"**진행 스코어: {entity_a} [{cur_a} : {cur_b}] {entity_b}**")
             
-            # 화면 표시용 정리 (단체전이면 팀 이름도 보여줌)
             display_df = temp_df[["팀", "득점자", "기술분류", "타겟부위"]] if "단체전" in match_type_selection else temp_df[["득점자", "기술분류", "타겟부위"]]
             st.dataframe(display_df, use_container_width=True)
             
@@ -252,20 +292,17 @@ elif menu == "📝 경기 결과 입력 (결과/세부)":
                 if not tournament or cur_a == cur_b: st.error("대회명 누락 혹은 스코어가 동점인지 확인하세요.")
                 else:
                     winner = entity_a if cur_a > cur_b else entity_b
-                    # 매치 저장
                     new_match = pd.DataFrame([{
                         "매치ID": match_id, "날짜": str(match_date), "대회명": tournament, "종목": weapon,
                         "경기유형": match_type_str, "타겟점수": target_score, "선수A": entity_a, "선수B": entity_b, "득점A": cur_a, "득점B": cur_b, "승자": winner
                     }])
                     pd.concat([matches_df, new_match], ignore_index=True).to_csv(MATCH_FILE, index=False, encoding='utf-8-sig')
                     
-                    # 액션 저장
                     temp_df['매치ID'] = match_id; temp_df['경기유형'] = match_type_str
-                    temp_df = temp_df[["매치ID", "경기유형", "득점자", "기술분류", "타겟부위"]]
+                    temp_df = temp_df[["매치ID", "경기유형", "팀", "득점자", "기술분류", "타겟부위"]] if '팀' in temp_df.columns else temp_df[["매치ID", "경기유형", "득점자", "기술분류", "타겟부위"]]
                     pd.concat([actions_df, temp_df], ignore_index=True).to_csv(ACTION_FILE, index=False, encoding='utf-8-sig')
                     
                     st.session_state.current_actions = []; st.success("저장 완료!"); st.rerun()
-
 
 # ---------------------------------------------------------
 # [메뉴 3] 상대 전적 분석
@@ -285,9 +322,9 @@ elif menu == "⚔️ 전적 분석 (선수/팀)":
         st.markdown("---")
         h2h_df = matches_df[((matches_df['선수A'] == p1) & (matches_df['선수B'] == p2)) | ((matches_df['선수A'] == p2) & (matches_df['선수B'] == p1))].copy().sort_values(by='날짜')
         
-        if "예선" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'] == '예선(Poule)']
-        elif "본선" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'] == '본선(ED)']
-        elif "단체전" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'] == '단체전(Team)']
+        if "예선" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'].str.contains('예선', na=False)]
+        elif "본선" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'].str.contains('본선', na=False)]
+        elif "단체전" in h2h_filter: h2h_df = h2h_df[h2h_df['경기유형'].str.contains('단체', na=False)]
         
         if not h2h_df.empty:
             total = len(h2h_df)
@@ -344,14 +381,19 @@ elif menu == "🧠 스마트 역량 분석 (PPI)":
                     conceded = row['득점B'] if row['선수A'] == target_player else row['득점A']
                     margin = scored - conceded
                     
-                    n_att.append((scored/ts)*100); n_def.append(((ts-conceded)/ts)*100); margins.append(margin)
+                    if ts > 0: 
+                        n_att.append((scored/ts)*100)
+                        n_def.append(((ts-conceded)/ts)*100)
+                    margins.append(margin)
+                    
                     if abs(margin) <= 2: c_total += 1; c_wins += (1 if margin > 0 else 0)
-                    if row['경기유형'] == '단체전(Team)': team_margins.append(margin)
+                    if '단체' in str(row['경기유형']): team_margins.append(margin)
                         
                 filtered_matches['마진'] = margins
-                a_att = sum(n_att)/total; a_def = sum(n_def)/total
+                a_att = sum(n_att)/total if total > 0 else 0
+                a_def = sum(n_def)/total if total > 0 else 0
                 c_rate = (c_wins/c_total*100) if c_total > 0 else 50
-                dom = min(100, max(0, 50 + (sum(margins)/total*10)))
+                dom = min(100, max(0, 50 + (sum(margins)/total*10))) if total > 0 else 50
                 
                 st.markdown("---")
                 c1, c2 = st.columns(2)
@@ -366,6 +408,33 @@ elif menu == "🧠 스마트 역량 분석 (PPI)":
                     recent['날짜표기'] = recent['날짜'].astype(str) + " (" + recent['경기유형'] + ")"
                     fig2 = px.bar(recent, x='날짜표기', y='마진', color='결과', color_discrete_map={'승/우위':'#2ECC71', '무승부':'gray', '패/열세':'#E74C3C'}, text='마진')
                     fig2.update_traces(textposition='outside'); st.plotly_chart(fig2, use_container_width=True)
+
+                ind_matches = filtered_matches[~filtered_matches['경기유형'].str.contains('단체', na=False)]
+                if not ind_matches.empty:
+                    st.markdown("---")
+                    st.markdown(f"### 🤺 개인전 (예선/본선) 수행 능력 리포트")
+                    
+                    ind_total = len(ind_matches)
+                    ind_wins = len(ind_matches[ind_matches['승자'] == target_player])
+                    ind_win_rate = (ind_wins / ind_total) * 100
+                    
+                    poule_m = ind_matches[ind_matches['경기유형'].str.contains('예선', na=False)]
+                    ed_m = ind_matches[ind_matches['경기유형'].str.contains('본선', na=False)]
+                    
+                    poule_win_rate = (len(poule_m[poule_m['승자'] == target_player]) / len(poule_m) * 100) if not poule_m.empty else 0
+                    ed_win_rate = (len(ed_m[ed_m['승자'] == target_player]) / len(ed_m) * 100) if not ed_m.empty else 0
+                    
+                    if ind_win_rate >= 70: ind_eval = "🏅 **[메달권 스트라이커]** 개인전에서 압도적인 승률을 자랑하며 상위권 진출이 유력한 탑 티어 기량을 보여줍니다."
+                    elif ind_win_rate >= 50: ind_eval = "🛡️ **[본선 단골 랭커]** 안정적인 1:1 교전 능력으로 꾸준히 승리를 챙기며 본선 무대에서 활약하는 선수입니다."
+                    else: ind_eval = "🌱 **[성장 잠재력]** 개인전 승률을 높이기 위해 공격 성공률과 위기 관리(Clutch) 능력을 한 단계 끌어올릴 필요가 있습니다."
+                    
+                    st.info(ind_eval)
+                    
+                    ic1, ic2, ic3, ic4 = st.columns(4)
+                    ic1.metric("개인전 총 전적", f"{ind_total}전 {ind_wins}승")
+                    ic2.metric("개인전 총 승률", f"{ind_win_rate:.1f}%")
+                    ic3.metric("예선(Poule) 승률", f"{poule_win_rate:.1f}%" if not poule_m.empty else "기록 없음")
+                    ic4.metric("본선(ED) 승률", f"{ed_win_rate:.1f}%" if not ed_m.empty else "기록 없음")
 
                 if len(team_margins) > 0:
                     st.markdown("---")
@@ -401,9 +470,9 @@ elif menu == "🎯 세부 전술/기술 분석":
         with col2: filter_type = st.radio("데이터 필터", ["전체 경기 통합", "예선(Poule)만", "본선(ED)만", "단체전(Team)만"], horizontal=True)
         
         player_actions = actions_df[actions_df['득점자'] == target_player]
-        if "예선" in filter_type: player_actions = player_actions[player_actions['경기유형'] == '예선(Poule)']
-        elif "본선" in filter_type: player_actions = player_actions[player_actions['경기유형'] == '본선(ED)']
-        elif "단체전" in filter_type: player_actions = player_actions[player_actions['경기유형'] == '단체전(Team)']
+        if "예선" in filter_type: player_actions = player_actions[player_actions['경기유형'].str.contains('예선', na=False)]
+        elif "본선" in filter_type: player_actions = player_actions[player_actions['경기유형'].str.contains('본선', na=False)]
+        elif "단체전" in filter_type: player_actions = player_actions[player_actions['경기유형'].str.contains('단체', na=False)]
         
         if player_actions.empty: st.warning("해당 조건의 데이터가 없습니다.")
         else:
@@ -421,4 +490,3 @@ elif menu == "🎯 세부 전술/기술 분석":
                 target_counts.columns = ['타겟', '비율']
                 fig_target = px.pie(target_counts, values='비율', names='타겟', hole=0.4, title="주력 타겟 부위")
                 st.plotly_chart(fig_target, use_container_width=True)
-
